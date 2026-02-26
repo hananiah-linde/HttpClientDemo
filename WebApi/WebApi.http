@@ -1,14 +1,24 @@
 @WebApi_HostAddress = http://localhost:5000
 
-GET {{WebApi_HostAddress}}/bad
+GET {{WebApi_HostAddress}}/v1
 Accept: application/json
 
 ###
 
-GET {{WebApi_HostAddress}}/better
+GET {{WebApi_HostAddress}}/v2
 Accept: application/json
 
 ###
 
-GET {{WebApi_HostAddress}}/best
+GET {{WebApi_HostAddress}}/v3
+Accept: application/json
+
+###
+
+GET {{WebApi_HostAddress}}/v4
+Accept: application/json
+
+###
+
+GET {{WebApi_HostAddress}}/v5
 Accept: application/json
