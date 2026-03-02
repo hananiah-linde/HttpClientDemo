@@ -17,15 +17,23 @@ builder.Services.AddHttpClient<PingTypedClient>(client =>
 
 var app = builder.Build();
 
-app.MapGet("/v1", async () =>
+app.MapGet("/v1", async (ILogger<Program> logger) =>
 {
+    logger.LogInformation("Calling API with new HttpClient Instance");
     using var client = new HttpClient();
     return await client.GetStringAsync("https://httpbin.org/get");
 });
 
-app.MapGet("/v2", async () => await staticClient.GetStringAsync("http://localhost:5001/ping"));
+app.MapGet("/v2", async (ILogger<Program> logger) =>
+{
+    logger.LogInformation("Calling API with static HttpClient Instance");
+    return await staticClient.GetStringAsync("http://localhost:5001/ping");
+});
 
-app.MapGet("/v3", async () => await betterStaticClient.GetStringAsync("http://localhost:5001/ping"));
+app.MapGet("/v3", async () =>
+{
+    return await betterStaticClient.GetStringAsync("http://localhost:5001/ping");
+});
 
 app.MapGet("/v4", async (IHttpClientFactory factory) =>
 {
