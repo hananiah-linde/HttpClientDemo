@@ -149,3 +149,8 @@ static class HttpClientNames
 {
     public const string TargetApi = "TargetApi";
 }
+
+// Required for WebApplicationFactory<Program> in integration tests.
+// Top-level statement programs generate an internal Program class by default;
+// this partial declaration makes it visible to the test project.
+public partial class Program { }
