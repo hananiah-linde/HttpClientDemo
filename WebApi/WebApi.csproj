@@ -11,7 +11,15 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Grants the test project direct access to internal types (IPingClient etc.) -->
         <InternalsVisibleTo Include="WebApi.Tests"/>
+        <!--
+            NSubstitute generates substitute implementations at runtime via Castle
+            DynamicProxy, which emits them into a dynamic assembly called
+            DynamicProxyGenAssembly2. Without this entry, Substitute.For<IPingClient>()
+            throws because the proxy generator can't see the internal interface.
+        -->
+        <InternalsVisibleTo Include="DynamicProxyGenAssembly2"/>
     </ItemGroup>
 
 </Project>

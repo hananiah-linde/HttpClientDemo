@@ -1,17 +1,11 @@
 // =============================================================================
-// v4 Unit Tests — PingClient (Typed HttpClient)
+// PingClient Unit Tests — testing the concrete HTTP implementation
 //
-// This is the key testability advantage of typed clients over the named-client
-// approach (v3):
+// These tests sit at the HTTP boundary: they verify that PingClient talks to
+// the right URL and correctly maps the response. FakeHttpMessageHandler is
+// appropriate here because the thing under test IS the HTTP interaction.
 //
-//   v3  →  endpoint depends on IHttpClientFactory (interface) — you CAN test
-//           it, but you must either mock the factory or use WebApplicationFactory.
-//
-//   v4  →  PingClient depends on HttpClient (concrete class) injected via DI.
-//           To unit-test it, just hand it an HttpClient backed by a fake handler.
-//           No web host, no factory, no DI container needed at all.
-//
-// Pure unit tests like these run in microseconds and have zero network I/O.
+// These tests are NOT about the endpoint — they're about PingClient itself.
 // =============================================================================
 
 namespace WebApi.Tests;
@@ -27,7 +21,6 @@ public class PingClientTests
     {
         var handler = new FakeHttpMessageHandler(responseBody, statusCode);
 
-        // Provide a BaseAddress so relative paths ("/ping") resolve correctly.
         var httpClient = new HttpClient(handler)
         {
             BaseAddress = new Uri("http://fake-target/")
@@ -36,9 +29,6 @@ public class PingClientTests
         return (new PingClient(httpClient), handler);
     }
 
-    // -------------------------------------------------------------------------
-    // Happy-path: downstream returns "pong"
-    // -------------------------------------------------------------------------
     [Fact]
     public async Task PingAsync_WhenDownstreamReturnsOk_ReturnsPong()
     {
@@ -49,10 +39,9 @@ public class PingClientTests
         Assert.Equal("pong", result);
     }
 
-    // -------------------------------------------------------------------------
-    // Verify the right URL path is called — typed clients own their paths, so
-    // a test can catch regressions if someone changes "/ping" to "/health".
-    // -------------------------------------------------------------------------
+    // Verifies PingClient owns the path — a regression guard if "/ping" ever
+    // gets renamed. This test belongs here, NOT in endpoint tests, because it
+    // is testing PingClient's internal HTTP behaviour.
     [Fact]
     public async Task PingAsync_CallsCorrectPath()
     {
@@ -64,11 +53,6 @@ public class PingClientTests
         Assert.Equal("/ping", request.RequestUri!.AbsolutePath);
     }
 
-    // -------------------------------------------------------------------------
-    // Sad-path: downstream returns a non-success status code.
-    // HttpClient.GetStringAsync throws HttpRequestException for 4xx/5xx.
-    // The test documents (and locks in) that behaviour for callers.
-    // -------------------------------------------------------------------------
     [Fact]
     public async Task PingAsync_WhenDownstreamReturnsError_ThrowsHttpRequestException()
     {

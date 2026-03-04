@@ -1,19 +1,22 @@
 // =============================================================================
-// v3 & v4 Integration Tests — full endpoint pipeline via WebApplicationFactory
+// v3 & v4 Endpoint Integration Tests
 //
-// WebApplicationFactory<Program> spins up the real ASP.NET host in-memory
-// (no listening socket, no network), giving us:
-//   - Real middleware pipeline
-//   - Real DI container
-//   - Real routing
+// Both endpoints are tested via WebApplicationFactory<Program>, which runs the
+// real ASP.NET pipeline in-memory. We override only the outbound dependency.
 //
-// We replace only the outbound HttpMessageHandler so our tests never touch
-// the real TargetApi. Everything else is production code.
+// KEY CONTRAST — what we must fake differs between v3 and v4:
 //
-// Why test at this level as well as unit level?
-//   - Catches wiring bugs: wrong registration, wrong base address, wrong path.
-//   - Validates the JSON shape the endpoint returns, not just the service logic.
-//   - Gives confidence that the DI configuration actually works end-to-end.
+//   v3 endpoint  →  depends on IHttpClientFactory
+//                   IHttpClientFactory.CreateClient() returns HttpClient (concrete).
+//                   We must still reach inside and swap the HttpMessageHandler.
+//                   Tests remain HTTP-aware: they deal with handlers and status codes.
+//
+//   v4 endpoint  →  depends on IPingClient (our domain interface).
+//                   NSubstitute creates a substitute in one line — no hand-rolled
+//                   fakes, no HTTP handler, no status codes. The test only cares
+//                   about what the endpoint does with the string it receives.
+//
+// This difference is the main reason to add an interface to your typed client.
 // =============================================================================
 
 namespace WebApi.Tests;
@@ -27,44 +30,34 @@ public class EndpointTests : IClassFixture<WebApplicationFactory<Program>>
         _factory = factory;
     }
 
-    // -------------------------------------------------------------------------
-    // Helper: create a factory variant with a stubbed outbound handler.
-    //
-    // ConfigureTestServices runs AFTER the real Program.cs service registrations,
-    // so we can override just the handler — base address, timeout, etc. all come
-    // from the real registration.
-    // -------------------------------------------------------------------------
-    private HttpClient BuildTestHttpClient(FakeHttpMessageHandler fakeHandler)
-    {
-        return _factory.WithWebHostBuilder(host =>
-        {
-            host.ConfigureTestServices(services =>
-            {
-                // Override the named client's primary handler (used by v3).
-                services.AddHttpClient(HttpClientNames.TargetApi)
-                    .ConfigurePrimaryHttpMessageHandler(() => fakeHandler);
-
-                // Override the typed client's primary handler (used by v4).
-                services.AddHttpClient<PingClient>()
-                    .ConfigurePrimaryHttpMessageHandler(() => fakeHandler);
-            });
-        }).CreateClient();
-    }
-
     // =========================================================================
     // v3 — Named client via IHttpClientFactory
+    //
+    // To stub the downstream we must configure the primary HttpMessageHandler.
+    // The test has to know that "pong" is a string body on a 200 response, and
+    // that a 500 becomes an exception. HTTP concepts leak into the test.
+    // NSubstitute doesn't help here — IHttpClientFactory.CreateClient() returns
+    // a concrete HttpClient, so we still need a FakeHttpMessageHandler.
     // =========================================================================
 
     [Fact]
-    public async Task V3_WhenDownstreamReturnsPong_EndpointReturnsOkWithExpectedBody()
+    public async Task V3_WhenDownstreamReturnsPong_EndpointReturnsOkWithPong()
     {
+        // Must create an HTTP-level fake — handler, status code, body.
         var fakeHandler = new FakeHttpMessageHandler("pong");
-        var client = BuildTestHttpClient(fakeHandler);
+
+        var client = _factory.WithWebHostBuilder(host =>
+        {
+            host.ConfigureTestServices(services =>
+            {
+                services.AddHttpClient(HttpClientNames.TargetApi)
+                    .ConfigurePrimaryHttpMessageHandler(() => fakeHandler);
+            });
+        }).CreateClient();
 
         var response = await client.GetAsync("/api/v3");
 
         response.EnsureSuccessStatusCode();
-
         var body = await response.Content.ReadAsStringAsync();
         Assert.Contains("v3", body);
         Assert.Contains("pong", body);
@@ -73,10 +66,16 @@ public class EndpointTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task V3_WhenDownstreamFails_EndpointReturns500()
     {
-        // The endpoint itself doesn't catch HttpRequestException, so an error
-        // from the downstream propagates as a 500 from our API.
         var fakeHandler = new FakeHttpMessageHandler("error", HttpStatusCode.InternalServerError);
-        var client = BuildTestHttpClient(fakeHandler);
+
+        var client = _factory.WithWebHostBuilder(host =>
+        {
+            host.ConfigureTestServices(services =>
+            {
+                services.AddHttpClient(HttpClientNames.TargetApi)
+                    .ConfigurePrimaryHttpMessageHandler(() => fakeHandler);
+            });
+        }).CreateClient();
 
         var response = await client.GetAsync("/api/v3");
 
@@ -84,52 +83,59 @@ public class EndpointTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     // =========================================================================
-    // v4 — Typed client (PingClient)
+    // v4 — Typed client behind IPingClient, using NSubstitute
+    //
+    // Substitute.For<IPingClient>() generates a full substitute at runtime.
+    // No hand-rolled FakePingClient or ThrowingPingClient class needed.
+    //
+    // Extra capability over manual fakes: Received() lets us assert that the
+    // endpoint actually called PingAsync() — not just that the response was ok.
     // =========================================================================
 
     [Fact]
-    public async Task V4_WhenDownstreamReturnsPong_EndpointReturnsOkWithExpectedBody()
+    public async Task V4_WhenDownstreamReturnsPong_EndpointReturnsOkWithPong()
     {
-        var fakeHandler = new FakeHttpMessageHandler("pong");
-        var client = BuildTestHttpClient(fakeHandler);
+        // One line to create a substitute — NSubstitute generates the implementation.
+        var pingClient = Substitute.For<IPingClient>();
+        pingClient.PingAsync().Returns("pong");
+
+        var client = _factory.WithWebHostBuilder(host =>
+        {
+            host.ConfigureTestServices(services =>
+            {
+                // Register the substitute directly — no HTTP involved at all.
+                services.AddSingleton(pingClient);
+            });
+        }).CreateClient();
 
         var response = await client.GetAsync("/api/v4");
 
         response.EnsureSuccessStatusCode();
-
         var body = await response.Content.ReadAsStringAsync();
         Assert.Contains("v4", body);
         Assert.Contains("pong", body);
+        // Verify the endpoint actually delegated to the client — not just that
+        // the response happened to be correct.
+        await pingClient.Received(1).PingAsync();
     }
 
     [Fact]
     public async Task V4_WhenDownstreamFails_EndpointReturns500()
     {
-        var fakeHandler = new FakeHttpMessageHandler("error", HttpStatusCode.InternalServerError);
-        var client = BuildTestHttpClient(fakeHandler);
+        var pingClient = Substitute.For<IPingClient>();
+        // Throws() is from NSubstitute.ExceptionExtensions — clean and readable.
+        pingClient.PingAsync().Throws(new InvalidOperationException("Downstream unavailable"));
+
+        var client = _factory.WithWebHostBuilder(host =>
+        {
+            host.ConfigureTestServices(services =>
+            {
+                services.AddSingleton(pingClient);
+            });
+        }).CreateClient();
 
         var response = await client.GetAsync("/api/v4");
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
-    }
-
-    // =========================================================================
-    // Cross-cutting: both endpoints call the same fake — proves both routes
-    // reach the downstream and neither is hard-coding a raw URL at the endpoint
-    // level (the handler capture confirms the path used).
-    // =========================================================================
-
-    [Theory]
-    [InlineData("/api/v3")]
-    [InlineData("/api/v4")]
-    public async Task BothVersions_CallDownstreamPingPath(string endpoint)
-    {
-        var fakeHandler = new FakeHttpMessageHandler("pong");
-        var client = BuildTestHttpClient(fakeHandler);
-
-        await client.GetAsync(endpoint);
-
-        var request = Assert.Single(fakeHandler.Requests);
-        Assert.Equal("/ping", request.RequestUri!.AbsolutePath);
     }
 }

@@ -18,8 +18,10 @@ builder.Services.AddHttpClient(HttpClientNames.TargetApi, client =>
     client.Timeout = TimeSpan.FromSeconds(10);
 });
 
-// v4: typed client registration - DI wires everything up for us
-builder.Services.AddHttpClient<PingClient>(client =>
+// v4: typed client registration - the interface/implementation overload means
+// callers depend on IPingClient, not the concrete class. DI and the factory
+// still wire everything up automatically.
+builder.Services.AddHttpClient<IPingClient, PingClient>(client =>
 {
     client.BaseAddress = new Uri(TargetApiBase);
     client.Timeout = TimeSpan.FromSeconds(10);
@@ -95,7 +97,7 @@ app.MapGet("/api/v3", async (IHttpClientFactory factory) =>
 });
 
 // ---------------------------------------------------------------------------
-// v4 - Typed HttpClient
+// v4 - Typed HttpClient behind an interface (IPingClient)
 //
 // IMPROVEMENT over v3:
 //   - Wraps HttpClient in a strongly-typed service class. No magic strings.
@@ -104,12 +106,19 @@ app.MapGet("/api/v3", async (IHttpClientFactory factory) =>
 //     behind a clean domain API.
 //   - The factory still manages handler lifetimes under the hood.
 //
+// TESTABILITY UPGRADE (the big win):
+//   - The endpoint depends on IPingClient, not HttpClient or IHttpClientFactory.
+//   - In tests you can register a FakePingClient : IPingClient that returns a
+//     hardcoded string. Zero HTTP concepts, zero fake handlers, zero network.
+//   - v3 can't do this: IHttpClientFactory.CreateClient() returns HttpClient
+//     (a concrete class), so tests must always deal with a fake handler.
+//
 // This is the recommended pattern for production code.
 // ---------------------------------------------------------------------------
-app.MapGet("/api/v4", async (PingClient pingClient) =>
+app.MapGet("/api/v4", async (IPingClient pingClient) =>
 {
     var response = await pingClient.PingAsync();
-    return Results.Ok(new { version = "v4 - Typed HttpClient (best practice)", response });
+    return Results.Ok(new { version = "v4 - Typed HttpClient with interface (best practice)", response });
 });
 
 app.Run();
@@ -135,14 +144,40 @@ static class StaticClients
 }
 
 /// <summary>
-/// Typed HTTP client for the TargetApi service.
-/// Registered with AddHttpClient&lt;PingClient&gt;() so the factory manages
-/// its HttpClient's handler lifetime automatically.
+/// Domain interface for the ping operation.
+/// The endpoint depends on this, not on PingClient or HttpClient directly.
+/// Swap in any implementation (real, fake, stub) without touching the endpoint.
 /// </summary>
-class PingClient(HttpClient client)
+interface IPingClient
+{
+    Task<string> PingAsync();
+}
+
+/// <summary>
+/// Typed HTTP client for the TargetApi service.
+/// Registered with AddHttpClient&lt;IPingClient, PingClient&gt;() so the factory
+/// manages its HttpClient's handler lifetime automatically.
+/// </summary>
+class PingClient(HttpClient client) : IPingClient
 {
     public async Task<string> PingAsync() =>
         await client.GetStringAsync("/ping");
+}
+
+/// <summary>
+/// A domain service that consumes IPingClient.
+/// This is the typical real-world pattern: a service class with its own logic
+/// that happens to depend on a typed HTTP client via its interface.
+/// PingService knows nothing about HTTP — it just calls PingAsync() and
+/// interprets the result. That logic is what we want to unit test.
+/// </summary>
+class PingService(IPingClient pingClient)
+{
+    public async Task<bool> IsAliveAsync()
+    {
+        var response = await pingClient.PingAsync();
+        return response == "pong";
+    }
 }
 
 static class HttpClientNames
