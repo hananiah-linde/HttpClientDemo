@@ -4,7 +4,7 @@ var app = builder.Build();
 
 app.MapGet("/ping", async () =>
 {
-    await Task.Delay(2000);
+    //await Task.Delay(2000);
     return "pong";
 });
 

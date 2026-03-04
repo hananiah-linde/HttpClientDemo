@@ -1,0 +1,16 @@
+meta {
+  name: Run V1
+  type: http
+  seq: 1
+}
+
+get {
+  url: http://localhost:5000/api/v1
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
